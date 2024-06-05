@@ -94,6 +94,7 @@ def roc_id_ood(score_id, score_ood):
 
 
 def ova_loss(logits_open, label):
+    # 转换为一个2 * num_classes 
     logits_open = logits_open.view(logits_open.size(0), 2, -1)
     logits_open = F.softmax(logits_open, 1)
     label_s_sp = torch.zeros((logits_open.size(0),
