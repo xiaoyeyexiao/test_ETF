@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python train.py --c config/openset_cv/openmatch/ETF_openmatch_cifar10_150_1.yaml
