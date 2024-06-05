@@ -343,7 +343,7 @@ class CIFAR10SSL(datasets.CIFAR10):
     def init_index(self):
         self.data_index = self.data
         self.targets_index = self.targets
-
+    # 通过这个函数来定义在迭代时，next()函数的返回值
     def __getitem__(self, index):
         img, target = self.data_index[index], self.targets_index[index]
         img = Image.fromarray(img)

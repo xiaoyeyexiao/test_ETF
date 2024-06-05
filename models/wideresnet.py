@@ -1,5 +1,6 @@
 import logging
-
+import sys
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -120,6 +121,7 @@ class WideResNet(nn.Module):
 class WideResNet_Open(nn.Module):
     def __init__(self, num_classes, depth=28, widen_factor=2, drop_rate=0.0):
         super(WideResNet_Open, self).__init__()
+        # channels: 一个列表，定义了网络中各层的通道数
         channels = [16, 16*widen_factor, 32*widen_factor, 64*widen_factor]
         assert((depth - 4) % 6 == 0)
         n = (depth - 4) / 6
@@ -144,9 +146,16 @@ class WideResNet_Open(nn.Module):
                 nn.ReLU(),
                 nn.Linear(128, 128),
         )
-        self.fc = nn.Linear(channels[3], num_classes)
+        # 用于标准分类的全连接层
+        # self.fc = nn.Linear(channels[3], num_classes)
         out_open = 2 * num_classes
-        self.fc_open = nn.Linear(channels[3], out_open, bias=False)
+        # 用于open set分类的全连接层
+        # self.fc_open = nn.Linear(channels[3], out_open, bias=False)
+        
+        # 获取ETF分类器
+        self.ETF = ETF_Classifier(feat_in=channels[3], num_classes=num_classes)
+        self.ETF_open = ETF_Classifier(feat_in=channels[3], num_classes=out_open)
+        
         self.channels = channels[3]
 
         for m in self.modules():
@@ -172,14 +181,17 @@ class WideResNet_Open(nn.Module):
         out = F.adaptive_avg_pool2d(out, 1)
         out = out.view(-1, self.channels)
 
-
+        
+        cur_M = self.ETF.ori_M
+        cur_M_open = self.ETF_open.ori_M
         if feat_only:
             return self.simclr_layer(out)
-        out_open = self.fc_open(out)
+        # out_open = self.fc_open(out)
+        out_open = torch.matmul(self.ETF_open(out).half(), cur_M_open.half())
         if feature:
-            return self.fc(out), out_open, out
+            return torch.matmul(self.ETF(out).half(), cur_M.half()), out_open, out
         else:
-            return self.fc(out), out_open
+            return torch.matmul(self.ETF(out).half(), cur_M.half()), out_open
 
     def weight_norm(self):
         w = self.fc_open.weight.data
@@ -272,3 +284,49 @@ def build_wideresnet(depth, widen_factor, dropout, num_classes, open=False):
                       widen_factor=widen_factor,
                       drop_rate=dropout,
                       num_classes=num_classes)
+
+class ETF_Classifier(nn.Module):
+    # fix_bn: 是否固定Batch Normalization层的参数
+    # LWS: 是否使用学习的权重缩放
+    # reg_ETF: 是否使用正则化的ETF
+    def __init__(self, feat_in, num_classes, fix_bn=False, LWS=False, reg_ETF=False):
+        super(ETF_Classifier, self).__init__()
+        # 随机的正交矩阵P，正交矩阵与自身的转置相乘得到单位矩阵
+        P = self.generate_random_orthogonal_matrix(feat_in, num_classes)
+        # 单位矩阵I
+        I = torch.eye(num_classes)
+        # 全一矩阵one
+        one = torch.ones(num_classes, num_classes)
+        # 原文中的公式(1)，得到ETF矩阵M
+        M = np.sqrt(num_classes / (num_classes-1)) * torch.matmul(P, I-((1/num_classes) * one))
+        self.ori_M = M.cuda()
+
+        self.LWS = LWS
+        self.reg_ETF = reg_ETF
+#        if LWS:
+#            self.learned_norm = nn.Parameter(torch.ones(1, num_classes))
+#            self.alpha = nn.Parameter(1e-3 * torch.randn(1, num_classes).cuda())
+#            self.learned_norm = (F.softmax(self.alpha, dim=-1) * num_classes)
+#        else:
+#            self.learned_norm = torch.ones(1, num_classes).cuda()
+        # 归一化层BN_H
+        self.BN_H = nn.BatchNorm1d(feat_in)
+        if fix_bn:
+            self.BN_H.weight.requires_grad = False
+            self.BN_H.bias.requires_grad = False
+
+    def generate_random_orthogonal_matrix(self, feat_in, num_classes):
+        # 随机矩阵a
+        a = np.random.random(size=(feat_in, num_classes))
+        # 通过QR分解(施密特正交化)得到正交矩阵P
+        P, _ = np.linalg.qr(a)
+        P = torch.tensor(P).float()
+        assert torch.allclose(torch.matmul(P.T, P), torch.eye(num_classes), atol=1e-07), torch.max(torch.abs(torch.matmul(P.T, P) - torch.eye(num_classes)))
+        return P
+
+    def forward(self, x):
+        x = self.BN_H(x)
+        # L2范数归一化
+        x = x / torch.clamp(
+            torch.sqrt(torch.sum(x ** 2, dim=1, keepdims=True)), 1e-8)
+        return x

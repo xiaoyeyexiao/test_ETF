@@ -149,11 +149,14 @@ def train(args, labeled_trainloader, unlabeled_dataset, test_loader, val_loader,
             logits_open_u1, logits_open_u2 = logits_open[2*b_size:].chunk(2)
 
             ## Loss for labeled samples
+            # 优化closed-set classifier
             Lx = F.cross_entropy(logits[:2*b_size],
                                       targets_x.repeat(2), reduction='mean')
+            # 使用标记样本优化ova-classifiers，原文公式(1)
             Lo = ova_loss(logits_open[:2*b_size], targets_x.repeat(2))
 
             ## Open-set entropy minimization
+            # 使用无标记样本优化ova-classifiers，原文公式(2)
             L_oem = ova_ent(logits_open_u1) / 2.
             L_oem += ova_ent(logits_open_u2) / 2.
 
@@ -162,6 +165,7 @@ def train(args, labeled_trainloader, unlabeled_dataset, test_loader, val_loader,
             logits_open_u2 = logits_open_u2.view(logits_open_u2.size(0), 2, -1)
             logits_open_u1 = F.softmax(logits_open_u1, 1)
             logits_open_u2 = F.softmax(logits_open_u2, 1)
+            # SOCR，原文公式(3)
             L_socr = torch.mean(torch.sum(torch.sum(torch.abs(
                 logits_open_u1 - logits_open_u2)**2, 1), 1))
 
@@ -172,6 +176,7 @@ def train(args, labeled_trainloader, unlabeled_dataset, test_loader, val_loader,
                 pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
                 max_probs, targets_u = torch.max(pseudo_label, dim=-1)
                 mask = max_probs.ge(args.threshold).float()
+                # fixmatch的损失函数
                 L_fix = (F.cross_entropy(logits_u_s,
                                          targets_u,
                                          reduction='none') * mask).mean()
@@ -179,8 +184,8 @@ def train(args, labeled_trainloader, unlabeled_dataset, test_loader, val_loader,
 
             else:
                 L_fix = torch.zeros(1).to(args.device).mean()
-            loss = Lx + Lo + args.lambda_oem * L_oem  \
-                   + args.lambda_socr * L_socr + L_fix
+            # Lx+Lo: Lsup, L_oem: Lem, L_socr: Loc, L_fix: Lfm
+            loss = Lx + Lo + args.lambda_oem * L_oem + args.lambda_socr * L_socr + L_fix
             if args.amp:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()

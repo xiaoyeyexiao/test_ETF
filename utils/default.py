@@ -141,6 +141,8 @@ def set_models(args):
     model.to(args.device)
 
     no_decay = ['bias', 'bn']
+    # 第一组参数：不包含在 no_decay 列表中的参数，应用权重衰减 args.wdecay。
+    # 第二组参数：包含在 no_decay 列表中的参数，不应用权重衰减（weight_decay 为 0.0）
     grouped_parameters = [
         {'params': [p for n, p in model.named_parameters() if not any(
             nd in n for nd in no_decay)], 'weight_decay': args.wdecay},
