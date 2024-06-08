@@ -109,7 +109,7 @@ def ova_loss(logits_open, label):
     Lo = open_loss_neg + open_loss
     return Lo
 
-
+ 
 def ova_ent(logits_open):
     logits_open = logits_open.view(logits_open.size(0), 2, -1)
     logits_open = F.softmax(logits_open, 1)
