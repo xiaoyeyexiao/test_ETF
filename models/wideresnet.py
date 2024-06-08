@@ -1,5 +1,4 @@
 import logging
-import sys
 import numpy as np
 import torch
 import torch.nn as nn
@@ -121,7 +120,6 @@ class WideResNet(nn.Module):
 class WideResNet_Open(nn.Module):
     def __init__(self, num_classes, depth=28, widen_factor=2, drop_rate=0.0):
         super(WideResNet_Open, self).__init__()
-        # channels: 一个列表，定义了网络中各层的通道数
         channels = [16, 16*widen_factor, 32*widen_factor, 64*widen_factor]
         assert((depth - 4) % 6 == 0)
         n = (depth - 4) / 6
@@ -146,16 +144,11 @@ class WideResNet_Open(nn.Module):
                 nn.ReLU(),
                 nn.Linear(128, 128),
         )
-        # 用于标准分类的全连接层
-        # self.fc = nn.Linear(channels[3], num_classes)
+        self.fc = nn.Linear(channels[3], num_classes)
         out_open = 2 * num_classes
-        # 用于open set分类的全连接层
         # self.fc_open = nn.Linear(channels[3], out_open, bias=False)
-        
-        # 获取ETF分类器
-        self.ETF = ETF_Classifier(feat_in=channels[3], num_classes=num_classes)
-        self.ETF_open = ETF_Classifier(feat_in=channels[3], num_classes=out_open)
-        
+        self.ova_classifier_size = 6
+        self.ova_classifiers = [ETF_Classifier(feat_in=channels[3], num_classes=2) for _ in range(self.ova_classifier_size) ]
         self.channels = channels[3]
 
         for m in self.modules():
@@ -181,17 +174,28 @@ class WideResNet_Open(nn.Module):
         out = F.adaptive_avg_pool2d(out, 1)
         out = out.view(-1, self.channels)
 
-        
-        cur_M = self.ETF.ori_M
-        cur_M_open = self.ETF_open.ori_M
+
         if feat_only:
             return self.simclr_layer(out)
         # out_open = self.fc_open(out)
-        out_open = torch.matmul(self.ETF_open(out).half(), cur_M_open.half())
+        
+        # logits_open[:2*batchsize].shape: (128, 2, 6)
+        logits_open = torch.zeros(out.size(0), 2, self.ova_classifier_size).cuda()
+        # 6个etf分别对每个样本的feature使用
+        for i in range(self.ova_classifier_size):
+            cur_M = self.ova_classifiers[i].ori_M
+            
+            # 使用ETF中的forwrd()将feature进行L2归一化
+            feat_l2 = self.ova_classifiers[i](out)
+            # 这一步就类似于CNN中全连接层的计算过程，用特征向量乘以权重，得到logit
+            l_open = torch.matmul(feat_l2.half(), cur_M.half())
+            
+            logits_open[:, :, i] = l_open
+            
         if feature:
-            return torch.matmul(self.ETF(out).half(), cur_M.half()), out_open, out
+            return self.fc(out), logits_open, out
         else:
-            return torch.matmul(self.ETF(out).half(), cur_M.half()), out_open
+            return self.fc(out), logits_open
 
     def weight_norm(self):
         w = self.fc_open.weight.data
@@ -311,6 +315,8 @@ class ETF_Classifier(nn.Module):
 #            self.learned_norm = torch.ones(1, num_classes).cuda()
         # 归一化层BN_H
         self.BN_H = nn.BatchNorm1d(feat_in)
+        # BN_H的参数都在cpu上，而特征向量在gpu上，这里不改的话会报错
+        self.BN_H.cuda()
         if fix_bn:
             self.BN_H.weight.requires_grad = False
             self.BN_H.bias.requires_grad = False
@@ -326,6 +332,7 @@ class ETF_Classifier(nn.Module):
 
     def forward(self, x):
         x = self.BN_H(x)
+        
         # L2范数归一化
         x = x / torch.clamp(
             torch.sqrt(torch.sum(x ** 2, dim=1, keepdims=True)), 1e-8)

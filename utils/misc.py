@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 __all__ = ['get_mean_and_std', 'accuracy', 'AverageMeter',
            'accuracy_open', 'ova_loss', 'compute_roc',
            'roc_id_ood', 'ova_ent', 'exclude_dataset',
-           'test_ood', 'test']
+           'test_ood', 'test', 'etf_ova_loss']
 
 
 def get_mean_and_std(dataset):
@@ -94,7 +94,6 @@ def roc_id_ood(score_id, score_ood):
 
 
 def ova_loss(logits_open, label):
-    # 转换为一个2 * num_classes 
     logits_open = logits_open.view(logits_open.size(0), 2, -1)
     logits_open = F.softmax(logits_open, 1)
     label_s_sp = torch.zeros((logits_open.size(0),
@@ -109,7 +108,28 @@ def ova_loss(logits_open, label):
     Lo = open_loss_neg + open_loss
     return Lo
 
- 
+def etf_ova_loss(logits_open, label):
+    # 使用softmax函数计算每个类所对应的两个结点
+    logits_open = F.softmax(logits_open, 1)
+    # 形状为 (2*batch_size, num_classes) 的全零张量
+    label_s_sp = torch.zeros((logits_open.size(0),
+                              logits_open.size(2))).long().to(label.device)
+    # 从0到127的一维向量
+    label_range = torch.arange(0, logits_open.size(0)).long()
+    # label_range的作用相当于 0:128
+    # 每一列相当于openmatch原文中的p^j(t=0|xb)，只有第j个值为1，表示样本属于第j个类的概率
+    # label_s_sp的形状为(2*batch_size, num_classes)
+    label_s_sp[label_range, label] = 1  # one-hot labels, in the shape of (bsz, num_classes)
+    # 每一列相当于openmatch原文中的p^j(t=1|xb)，只有第j个值为0，表示样本不属于第j个类的概率
+    label_sp_neg = 1 - label_s_sp
+    # openmatch原文公式(1)
+    # logits_open[:, 1, :]的形状为(2 * batch_size, num_classes)
+    # 两个矩阵逐元素相乘，然后在第二维的方向上相加，实际上就是计算各个类所对应概率值的对数
+    open_loss = torch.mean(torch.sum(-torch.log(logits_open[:, 1, :] + 1e-8) * label_s_sp, 1))
+    open_loss_neg = torch.mean(torch.max(-torch.log(logits_open[:, 0, :] + 1e-8) * label_sp_neg, 1)[0])
+    Lo = open_loss_neg + open_loss
+    return Lo
+
 def ova_ent(logits_open):
     logits_open = logits_open.view(logits_open.size(0), 2, -1)
     logits_open = F.softmax(logits_open, 1)
