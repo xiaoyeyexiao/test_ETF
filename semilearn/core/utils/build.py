@@ -18,6 +18,7 @@ def get_net_builder(net_name, from_name: bool):
         net_name: 'WideResNet' or network names in torchvision.models
         from_name: If True, net_buidler takes models in torch.vision models. Then, net_conf is ignored.
     """
+    # 官方的模型
     if from_name:
         import torchvision.models as nets
         model_name_list = sorted(name for name in nets.__dict__
@@ -30,6 +31,7 @@ def get_net_builder(net_name, from_name: bool):
                                received: {net_name}")
         else:
             return nets.__dict__[net_name]
+    # 自定义的模型
     else:
         # TODO: fix bug here
         import semilearn.nets as nets

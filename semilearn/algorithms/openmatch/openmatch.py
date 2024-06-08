@@ -1,4 +1,5 @@
 import copy
+import sys
 import numpy as np
 from PIL import Image
 from sklearn.metrics import accuracy_score, precision_score, recall_score
@@ -78,17 +79,46 @@ class OpenMatchDataset(BasicDataset):
 
 
 class OpenMatchNet(nn.Module):
-    def __init__(self, base, num_classes):
+    def __init__(self, base, num_classes, gpu):
         super(OpenMatchNet, self).__init__()
         self.backbone = base
+        # 128
         self.feat_planes = base.num_features
+        self.gpu = gpu
+        
+        # 最开始的时候，每个样本对应一个logits，不同logits并不处于同一个特征空间，彼此关联不大
+        # 这里的全连接层，其实也可以看做是6个二分类器的结合
+        # 将该全连接层分为6组，对每一组使用softmax函数，该组就成为了对应类的二分类器
+        # self.ova_classifiers = nn.Linear(self.feat_planes, num_classes * 2, bias=False)
 
-        self.ova_classifiers = nn.Linear(self.feat_planes, num_classes * 2, bias=False)
+        # 而对于ETF分类器来说，形状是固定的，有几个类就是几分类器，
+        # 不同logits处于同一个特征空间，不能随便拆开使用，因此6个二分类器要设置6个ETF
+        self.ova_classifier_size = 6
+        self.ova_classifiers = [ETF_Classifier(feat_in=self.feat_planes, num_classes=2, gpu=self.gpu) for _ in range(self.ova_classifier_size) ]
 
     def forward(self, x, **kwargs):
+        # only_feat=True，不需要使用basebone中的全连接层，返回的是features，而不是logits
+        # feat.shape: (256, 128)
         feat = self.backbone(x, only_feat=True)
+        # only_fc=True，只需使用basebone中的全连接层，传入features，返回logits
         logits = self.backbone(feat, only_fc=True)
-        logits_open = self.ova_classifiers(feat)
+        
+        # logits_open.shape: (256, 12)
+        # logits_open = self.ova_classifiers(feat)
+        
+        # logits_open.shape: (256, 2, 6)
+        logits_open = torch.zeros(feat.size(0), 2, self.ova_classifier_size).cuda(self.gpu)
+        # 6个etf分别对每个样本的feature使用
+        for i in range(self.ova_classifier_size):
+            cur_M = self.ova_classifiers[i].ori_M
+            
+            # 使用ETF中的forwrd()将feature进行L2归一化
+            feat_l2 = self.ova_classifiers[i](feat)
+            # 这一步就类似于CNN中全连接层的计算过程，用特征向量乘以权重，得到logit
+            l_open = torch.matmul(feat_l2, cur_M)
+            
+            logits_open[:, :, i] = l_open
+        
         return {'logits': logits, 'logits_open': logits_open , 'feat': feat}
 
     def group_matcher(self, coarse=False):
@@ -102,6 +132,7 @@ class OpenMatch(AlgorithmBase):
     """
 
     def __init__(self, args, net_builder, tb_log=None, logger=None):
+        # 在这个地方创建了一个AlgorithmBase对象，net_builder是自定义的一个创建base的函数
         super().__init__(args, net_builder, tb_log, logger)
         # openmatch specified arguments
         self.p_cutoff = args.p_cutoff
@@ -124,12 +155,12 @@ class OpenMatch(AlgorithmBase):
 
     def set_model(self):
         model = super().set_model()  # backbone
-        model = OpenMatchNet(model, num_classes=self.num_classes)  # including ova classifiers
+        model = OpenMatchNet(model, self.num_classes, self.gpu)  # including ova classifiers
         return model
 
     def set_ema_model(self):
         ema_model = self.net_builder(num_classes=self.num_classes)
-        ema_model = OpenMatchNet(ema_model, num_classes=self.num_classes)
+        ema_model = OpenMatchNet(ema_model, self.num_classes, self.gpu)
         ema_model.load_state_dict(self.model.state_dict())
         return ema_model
 
@@ -188,12 +219,19 @@ class OpenMatch(AlgorithmBase):
                 inputs = torch.cat((x_lb_w_0, x_lb_w_1, x_ulb_w_0, x_ulb_w_1))
                 outputs = self.model(inputs)
                 logits_x_lb = outputs['logits'][:num_lb * 2]
+                # outputs['logits_open'].shape: (256, 12)
+                # num_lb: 64
+                # logits_open_lb.shape: (128, 12)
+                # inputs中后面num_lb*2个输入专门用于训练ova_classifiers
                 logits_open_lb = outputs['logits_open'][:num_lb * 2]
                 logits_open_ulb_0, logits_open_ulb_1 = outputs['logits_open'][num_lb * 2:].chunk(2)
             else:
                 raise ValueError("Bad configuration: use_cat should be True!")
 
             sup_loss = ce_loss(logits_x_lb, y_lb.repeat(2), reduction='mean')
+            # logits_open_lb对应x_ulb_w_0和x_ulb_w_1两者的logits
+            # x_ulb_w_0和x_ulb_w_1的数据和增强方式都是一模一样的
+            # 所以y_lb直接多复制一份，两份y_lb分别对应x_ulb_w_0和x_ulb_w_1
             ova_loss = ova_loss_func(logits_open_lb, y_lb.repeat(2))
             em_loss = em_loss_func(logits_open_ulb_0, logits_open_ulb_1)
             socr_loss = socr_loss_func(logits_open_ulb_0, logits_open_ulb_1)
@@ -295,3 +333,52 @@ class OpenMatch(AlgorithmBase):
             SSL_Argument('--start_fix', int, 10),
             SSL_Argument('--fix_uratio', int, 7)
         ]
+
+class ETF_Classifier(nn.Module):
+    # fix_bn: 是否固定Batch Normalization层的参数
+    # LWS: 是否使用学习的权重缩放
+    # reg_ETF: 是否使用正则化的ETF
+    def __init__(self, feat_in, num_classes, gpu, fix_bn=False, LWS=False, reg_ETF=False):
+        super(ETF_Classifier, self).__init__()
+        # 随机的正交矩阵P，正交矩阵与自身的转置相乘得到单位矩阵
+        P = self.generate_random_orthogonal_matrix(feat_in, num_classes)
+        # 单位矩阵I
+        I = torch.eye(num_classes)
+        # 全一矩阵one
+        one = torch.ones(num_classes, num_classes)
+        # 原文中的公式(1)，得到ETF矩阵M
+        M = np.sqrt(num_classes / (num_classes-1)) * torch.matmul(P, I-((1/num_classes) * one))
+        self.ori_M = M.cuda(gpu)
+
+        self.LWS = LWS
+        self.reg_ETF = reg_ETF
+#        if LWS:
+#            self.learned_norm = nn.Parameter(torch.ones(1, num_classes))
+#            self.alpha = nn.Parameter(1e-3 * torch.randn(1, num_classes).cuda())
+#            self.learned_norm = (F.softmax(self.alpha, dim=-1) * num_classes)
+#        else:
+#            self.learned_norm = torch.ones(1, num_classes).cuda()
+        # 归一化层BN_H
+        self.BN_H = nn.BatchNorm1d(feat_in)
+        # BN_H的参数都在cpu上，而特征向量在gpu上，这里不改的话会报错
+        self.BN_H.cuda(gpu)
+        if fix_bn:
+            self.BN_H.weight.requires_grad = False
+            self.BN_H.bias.requires_grad = False
+
+    def generate_random_orthogonal_matrix(self, feat_in, num_classes):
+        # 随机矩阵a
+        a = np.random.random(size=(feat_in, num_classes))
+        # 通过QR分解(施密特正交化)得到正交矩阵P
+        P, _ = np.linalg.qr(a)
+        P = torch.tensor(P).float()
+        assert torch.allclose(torch.matmul(P.T, P), torch.eye(num_classes), atol=1e-07), torch.max(torch.abs(torch.matmul(P.T, P) - torch.eye(num_classes)))
+        return P
+
+    def forward(self, x):
+        x = self.BN_H(x)
+        
+        # L2范数归一化
+        x = x / torch.clamp(
+            torch.sqrt(torch.sum(x ** 2, dim=1, keepdims=True)), 1e-8)
+        return x

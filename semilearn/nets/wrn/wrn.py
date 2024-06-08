@@ -1,4 +1,5 @@
 import math
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -121,9 +122,12 @@ class WideResNet(nn.Module):
 
         if only_fc:
             return self.fc(x)
-        
+        # x.shape: (256, 3, 32, 32)
+        # out.shape: (256, 128, 8, 8)
         out = self.extract(x)
+        # out.shape: (256, 128, 1, 1)
         out = F.adaptive_avg_pool2d(out, 1)
+        # out.shape: (256, 128)
         out = out.view(-1, self.channels)
 
         if only_feat:
