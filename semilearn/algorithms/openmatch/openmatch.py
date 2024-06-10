@@ -15,7 +15,7 @@ from semilearn.core.utils import get_data_loader
 from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook
 from semilearn.algorithms.utils import ce_loss, consistency_loss, SSL_Argument, str2bool
 
-from .utils import ova_loss_func, em_loss_func, socr_loss_func
+from .utils import ova_loss_func, etf_ova_loss_func, em_loss_func, socr_loss_func
 
 
 def pil_loader(path):
@@ -103,10 +103,10 @@ class OpenMatchNet(nn.Module):
         # only_fc=True，只需使用basebone中的全连接层，传入features，返回logits
         logits = self.backbone(feat, only_fc=True)
         
-        # logits_open.shape: (256, 12)
+        # logits_open[:2*batchsize].shape: (128, 12)
         # logits_open = self.ova_classifiers(feat)
         
-        # logits_open.shape: (256, 2, 6)
+        # logits_open[:2*batchsize].shape: (128, 2, 6)
         logits_open = torch.zeros(feat.size(0), 2, self.ova_classifier_size).cuda(self.gpu)
         # 6个etf分别对每个样本的feature使用
         for i in range(self.ova_classifier_size):
@@ -232,7 +232,7 @@ class OpenMatch(AlgorithmBase):
             # logits_open_lb对应x_ulb_w_0和x_ulb_w_1两者的logits
             # x_ulb_w_0和x_ulb_w_1的数据和增强方式都是一模一样的
             # 所以y_lb直接多复制一份，两份y_lb分别对应x_ulb_w_0和x_ulb_w_1
-            ova_loss = ova_loss_func(logits_open_lb, y_lb.repeat(2))
+            ova_loss = etf_ova_loss_func(logits_open_lb, y_lb.repeat(2))
             em_loss = em_loss_func(logits_open_ulb_0, logits_open_ulb_1)
             socr_loss = socr_loss_func(logits_open_ulb_0, logits_open_ulb_1)
 
