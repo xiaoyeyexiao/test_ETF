@@ -1,5 +1,6 @@
 import math
 import sys
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -93,7 +94,8 @@ class WideResNet(nn.Module):
         # global average pooling and classifier
         self.bn1 = nn.BatchNorm2d(channels[3], momentum=0.001, eps=0.001)
         self.relu = nn.LeakyReLU(negative_slope=0.1, inplace=False)
-        self.fc = nn.Linear(channels[3], num_classes)
+        # self.fc = nn.Linear(channels[3], num_classes)
+        self.fc = ETF_Classifier(channels[3], num_classes)    
         self.channels = channels[3]
         self.num_features = channels[3]
 
@@ -133,7 +135,10 @@ class WideResNet(nn.Module):
         if only_feat:
             return out
         
-        output = self.fc(out)
+        cur_M = self.fc.ori_M
+        out = self.fc(out)
+        # output = self.fc(out)
+        output = torch.matmul(out.half(), cur_M.half())
         result_dict = {'logits':output, 'feat':out}
         return result_dict
 
@@ -173,3 +178,52 @@ def wrn_28_8(pretrained=False, pretrained_path=None, **kwargs):
 
 if __name__ == '__main__':
     model = wrn_28_2(pretrained=True, num_classes=10)
+
+class ETF_Classifier(nn.Module):
+    # fix_bn: 是否固定Batch Normalization层的参数
+    # LWS: 是否使用学习的权重缩放
+    # reg_ETF: 是否使用正则化的ETF
+    def __init__(self, feat_in, num_classes, fix_bn=False, LWS=False, reg_ETF=False):
+        super(ETF_Classifier, self).__init__()
+        # 随机的正交矩阵P，正交矩阵与自身的转置相乘得到单位矩阵
+        P = self.generate_random_orthogonal_matrix(feat_in, num_classes)
+        # 单位矩阵I
+        I = torch.eye(num_classes)
+        # 全一矩阵one
+        one = torch.ones(num_classes, num_classes)
+        # 原文中的公式(1)，得到ETF矩阵M
+        M = np.sqrt(num_classes / (num_classes-1)) * torch.matmul(P, I-((1/num_classes) * one))
+        self.ori_M = M.cuda()
+
+        self.LWS = LWS
+        self.reg_ETF = reg_ETF
+#        if LWS:
+#            self.learned_norm = nn.Parameter(torch.ones(1, num_classes))
+#            self.alpha = nn.Parameter(1e-3 * torch.randn(1, num_classes).cuda())
+#            self.learned_norm = (F.softmax(self.alpha, dim=-1) * num_classes)
+#        else:
+#            self.learned_norm = torch.ones(1, num_classes).cuda()
+        # 归一化层BN_H
+        self.BN_H = nn.BatchNorm1d(feat_in)
+        # BN_H的参数都在cpu上，而特征向量在gpu上，这里不改的话会报错
+        self.BN_H.cuda()
+        if fix_bn:
+            self.BN_H.weight.requires_grad = False
+            self.BN_H.bias.requires_grad = False
+
+    def generate_random_orthogonal_matrix(self, feat_in, num_classes):
+        # 随机矩阵a
+        a = np.random.random(size=(feat_in, num_classes))
+        # 通过QR分解(施密特正交化)得到正交矩阵P
+        P, _ = np.linalg.qr(a)
+        P = torch.tensor(P).float()
+        assert torch.allclose(torch.matmul(P.T, P), torch.eye(num_classes), atol=1e-07), torch.max(torch.abs(torch.matmul(P.T, P) - torch.eye(num_classes)))
+        return P
+
+    def forward(self, x):
+        x = self.BN_H(x)
+        
+        # L2范数归一化
+        x = x / torch.clamp(
+            torch.sqrt(torch.sum(x ** 2, dim=1, keepdims=True)), 1e-8)
+        return x
