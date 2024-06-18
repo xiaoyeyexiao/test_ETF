@@ -39,7 +39,7 @@ def set_parser():
                         choices=['sgd', 'adam'],
                         help='optimize name')
     parser.add_argument('--num-labeled', type=int, default=400,
-                        choices=[25, 50, 100, 400],
+                        choices=[4, 25, 50, 100, 400],
                         help='number of labeled data per each class')
     parser.add_argument('--num_val', type=int, default=50,
                         help='number of validation data per each class')
