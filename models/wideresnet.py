@@ -1,4 +1,5 @@
 import logging
+import sys
 import numpy as np
 import torch
 import torch.nn as nn
@@ -148,7 +149,15 @@ class WideResNet_Open(nn.Module):
         out_open = 2 * num_classes
         # self.fc_open = nn.Linear(channels[3], out_open, bias=False)
         self.ova_classifier_size = 6
-        self.ova_classifiers = [ETF_Classifier(feat_in=channels[3], num_classes=2) for _ in range(self.ova_classifier_size) ]
+        # self.ova_classifiers = [ETF_Classifier(feat_in=channels[3], num_classes=2) for _ in range(self.ova_classifier_size) ]
+        
+        # ova_classifiers是通过列表解析直接在列表中创建的，而不是通过 nn.Module 的属性初始化的。
+        # PyTorch 不能自动检测到列表中的这些模块，并将它们移到 GPU 上，
+        # 即使调用 model.cuda()，这些线性层仍然留在 CPU 上
+        # nn.ModuleList 是 PyTorch 提供的一个容器，它会自动将其中的 nn.Module 子模块移到与父模块相同的设备上。
+        # 可以将 ova_classifiers 从 Python 列表换成 nn.ModuleList，
+        # 这样就能确保这些子模块在调用 model.cuda() 时也会被正确移动到 GPU 上
+        self.ova_classifiers = nn.ModuleList([nn.Linear(channels[3], 2, bias=False) for _ in range(self.ova_classifier_size) ])
         self.channels = channels[3]
 
         for m in self.modules():
@@ -183,12 +192,13 @@ class WideResNet_Open(nn.Module):
         logits_open = torch.zeros(out.size(0), 2, self.ova_classifier_size).cuda()
         # 6个etf分别对每个样本的feature使用
         for i in range(self.ova_classifier_size):
-            cur_M = self.ova_classifiers[i].ori_M
+            # cur_M = self.ova_classifiers[i].ori_M
             
-            # 使用ETF中的forwrd()将feature进行L2归一化
-            feat_l2 = self.ova_classifiers[i](out)
-            # 这一步就类似于CNN中全连接层的计算过程，用特征向量乘以权重，得到logit
-            l_open = torch.matmul(feat_l2.half(), cur_M.half())
+            # # 使用ETF中的forwrd()将feature进行L2归一化
+            # feat_l2 = self.ova_classifiers[i](out)
+            # # 这一步就类似于CNN中全连接层的计算过程，用特征向量乘以权重，得到logit
+            # l_open = torch.matmul(feat_l2.half(), cur_M.half())
+            l_open = self.ova_classifiers[i](out)
             
             logits_open[:, :, i] = l_open
             
@@ -331,9 +341,9 @@ class ETF_Classifier(nn.Module):
         return P
 
     def forward(self, x):
-        x = self.BN_H(x)
+        # x = self.BN_H(x)
         
-        # L2范数归一化
-        x = x / torch.clamp(
-            torch.sqrt(torch.sum(x ** 2, dim=1, keepdims=True)), 1e-8)
+        # # L2范数归一化
+        # x = x / torch.clamp(
+        #     torch.sqrt(torch.sum(x ** 2, dim=1, keepdims=True)), 1e-8)
         return x

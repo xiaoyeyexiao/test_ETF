@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import copy
 import sys
@@ -14,7 +15,7 @@ from tqdm import tqdm
 from utils import AverageMeter, ova_loss, etf_ova_loss,\
     save_checkpoint, ova_ent, \
     test, test_ood, exclude_dataset
-
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 logger = logging.getLogger(__name__)
 best_acc = 0
 best_acc_val = 0
@@ -213,6 +214,7 @@ def train(args, labeled_trainloader, unlabeled_dataset, test_loader, val_loader,
             batch_time.update(time.time() - end)
             end = time.time()
 
+            # 更新进度条的描述和进度
             if not args.no_progress:
                 p_bar.set_description(default_out.format(**output_args))
                 p_bar.update()
@@ -258,7 +260,7 @@ def train(args, labeled_trainloader, unlabeled_dataset, test_loader, val_loader,
             if args.use_ema:
                 ema_to_save = ema_model.ema.module if hasattr(
                     ema_model.ema, "module") else ema_model.ema
-
+            # 保存模型检查点
             save_checkpoint({
                 'epoch': epoch + 1,
                 'state_dict': model_to_save.state_dict(),
