@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import copy
 import sys
@@ -187,7 +188,6 @@ def train(args, labeled_trainloader, unlabeled_dataset, test_loader, val_loader,
                     scaled_loss.backward()
             else:
                 loss.backward()
-
             losses.update(loss.item())
             losses_x.update(Lx.item())
             losses_o.update(Lo.item())

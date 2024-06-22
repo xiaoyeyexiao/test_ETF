@@ -147,8 +147,8 @@ class WideResNet_Open(nn.Module):
         self.fc = nn.Linear(channels[3], num_classes)
         out_open = 2 * num_classes
         # self.fc_open = nn.Linear(channels[3], out_open, bias=False)
-        self.ova_classifier_size = 6
-        self.ova_classifiers = [ETF_Classifier(feat_in=channels[3], num_classes=2) for _ in range(self.ova_classifier_size) ]
+        self.mb_etf_size = 6
+        self.mb_etf = [ETF_Classifier(feat_in=channels[3], num_classes=2) for _ in range(self.mb_etf_size) ]
         self.channels = channels[3]
 
         for m in self.modules():
@@ -180,15 +180,13 @@ class WideResNet_Open(nn.Module):
         # out_open = self.fc_open(out)
         
         # logits_open[:2*batchsize].shape: (128, 2, 6)
-        logits_open = torch.zeros(out.size(0), 2, self.ova_classifier_size).cuda()
+        logits_open = torch.zeros(out.size(0), 2, self.mb_etf_size).cuda()
         # 6个etf分别对每个样本的feature使用
-        for i in range(self.ova_classifier_size):
-            cur_M = self.ova_classifiers[i].ori_M
-            
-            # 使用ETF中的forwrd()将feature进行L2归一化
-            feat_l2 = self.ova_classifiers[i](out)
+        for i in range(self.mb_etf_size):
+            cur_M = self.mb_etf[i].ori_M
+
             # 这一步就类似于CNN中全连接层的计算过程，用特征向量乘以权重，得到logit
-            l_open = torch.matmul(feat_l2.half(), cur_M.half())
+            l_open = torch.matmul(out.half(), cur_M.half())
             
             logits_open[:, :, i] = l_open
             
@@ -307,19 +305,6 @@ class ETF_Classifier(nn.Module):
 
         self.LWS = LWS
         self.reg_ETF = reg_ETF
-#        if LWS:
-#            self.learned_norm = nn.Parameter(torch.ones(1, num_classes))
-#            self.alpha = nn.Parameter(1e-3 * torch.randn(1, num_classes).cuda())
-#            self.learned_norm = (F.softmax(self.alpha, dim=-1) * num_classes)
-#        else:
-#            self.learned_norm = torch.ones(1, num_classes).cuda()
-        # 归一化层BN_H
-        self.BN_H = nn.BatchNorm1d(feat_in)
-        # BN_H的参数都在cpu上，而特征向量在gpu上，这里不改的话会报错
-        self.BN_H.cuda()
-        if fix_bn:
-            self.BN_H.weight.requires_grad = False
-            self.BN_H.bias.requires_grad = False
 
     def generate_random_orthogonal_matrix(self, feat_in, num_classes):
         # 随机矩阵a
@@ -329,11 +314,3 @@ class ETF_Classifier(nn.Module):
         P = torch.tensor(P).float()
         assert torch.allclose(torch.matmul(P.T, P), torch.eye(num_classes), atol=1e-07), torch.max(torch.abs(torch.matmul(P.T, P) - torch.eye(num_classes)))
         return P
-
-    def forward(self, x):
-        x = self.BN_H(x)
-        
-        # L2范数归一化
-        x = x / torch.clamp(
-            torch.sqrt(torch.sum(x ** 2, dim=1, keepdims=True)), 1e-8)
-        return x

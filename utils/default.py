@@ -72,7 +72,8 @@ def set_model_config(args):
         args.ood_data = ["svhn", 'cifar100']
 
     elif args.dataset == 'cifar100':
-        args.ood_data = ['cifar10', "svhn", 'lsun', 'imagenet']
+        # args.ood_data = ['cifar10', "svhn", 'lsun', 'imagenet']
+        args.ood_data = ['cifar10', "svhn"]
 
     elif 'imagenet' in args.dataset:
         args.ood_data = ['lsun', 'dtd', 'cub', 'flowers102',
