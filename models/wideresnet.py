@@ -144,7 +144,8 @@ class WideResNet_Open(nn.Module):
                 nn.ReLU(),
                 nn.Linear(128, 128),
         )
-        self.fc = nn.Linear(channels[3], num_classes)
+        self.cs_etf = ETF_Classifier(channels[3], num_classes)
+        # self.fc = nn.Linear(channels[3], num_classes)
         out_open = 2 * num_classes
         # self.fc_open = nn.Linear(channels[3], out_open, bias=False)
         self.mb_etf_size = 6
@@ -179,6 +180,10 @@ class WideResNet_Open(nn.Module):
             return self.simclr_layer(out)
         # out_open = self.fc_open(out)
         
+        # logits of closed classifier
+        logits = torch.matmul(out.half(), self.cs_etf.ori_M.half())
+        
+        # logits of multi-binary classifiers
         # logits_open[:2*batchsize].shape: (128, 2, 6)
         logits_open = torch.zeros(out.size(0), 2, self.mb_etf_size).cuda()
         # 6个etf分别对每个样本的feature使用
@@ -191,9 +196,9 @@ class WideResNet_Open(nn.Module):
             logits_open[:, :, i] = l_open
             
         if feature:
-            return self.fc(out), logits_open, out
+            return logits, logits_open, out
         else:
-            return self.fc(out), logits_open
+            return logits, logits_open
 
     def weight_norm(self):
         w = self.fc_open.weight.data
